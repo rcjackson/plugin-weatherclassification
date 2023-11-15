@@ -9,11 +9,11 @@ import os
 import xarray as xr
 import tensorflow as tf
 import glob
-import globus_sdk
 import matplotlib.pyplot as plt
-import act
+import cmweather
+import paramiko
 
-from waggle.plugin import Plugin
+#from waggle.plugin import Plugin
 from datetime import datetime, timedelta
 from scipy.signal import convolve2d
 from tensorflow.keras.models import load_model
@@ -26,8 +26,10 @@ import logging
 import utils
 
 # 2. enable debug logging
-
-logging.basicConfig(level=logging.DEBUG)
+lidar_ip_addr = '192.168.1.90'
+lidar_uname = 'waggle'
+lidar_pwd = 'w8ggl3'
+#logging.basicConfig(level=logging.DEBUG)
 
 def convert_to_hours_minutes_seconds(decimal_hour, initial_time):
     delta = timedelta(hours=decimal_hour)
@@ -40,18 +42,18 @@ def load_file(file):
     time = pd.to_datetime([convert_to_hours_minutes_seconds(x, initial_time) 
         for x in field_dict['decimal_time']])
 
-    ds = xr.Dataset(coords={'range':field_dict['center_of_gates'],
+    ds = xr.Dataset(coords={'range': field_dict['center_of_gates'],
                             'time': time,
                             'azimuth': ('time', field_dict['azimuth'])},
-                    data_vars={'radial_velocity':(['range', 'time'],
-                                                  field_dict['radial_velocity']),
-                               'beta': (('range', 'time'), 
-                                        field_dict['beta']),
-                               'intensity': (('range', 'time'),
-                                             field_dict['intensity'])
+                    data_vars={'radial_velocity':(['time', 'range'],
+                                                  field_dict['radial_velocity'].T),
+                               'beta': (['time', 'range'],
+                                        field_dict['beta'].T),
+                               'intensity': (['time', 'range'],
+                                             field_dict['intensity'].T)
                               }
                    )
-    ds['snr'] = ds['intensity'] - 1
+    ds['snr'] = 10 * np.log10(ds['intensity'] - 1)
     return ds
 
 
@@ -70,14 +72,14 @@ def make_imgs(ds, config, interval=5):
     times = ds.time.values
     print(times)
     which_ranges = int(np.argwhere(ds.range.values < 8000.)[-1])
-    ranges = np.tile(ds.range.values, (ds['snr'].shape[1], 1)).T
-    
-    ds['snr'] = ds['snr'] + 2 * np.log10(ranges + 1)
+    ranges = np.tile(ds.range.values, (ds['snr'].shape[0], 1))
     conv_matrix = return_convolution_matrix(5, 5)
-    snr_avg = convolve2d(ds['snr'].values, conv_matrix, mode='same')
-    ds['stddev'] = (('range', 'time'), 
-            np.sqrt(convolve2d((ds['snr'] - snr_avg) ** 2, conv_matrix, mode='same')))
-    Zn = ds.stddev.values.T
+    ds['snr'] = ds['snr'] + 2 * np.log10(ranges + 1)
+    snr_avg = convolve2d(ds['snr'].values, conv_matrix, mode='same') 
+    ds['stddev'] = (('time', 'range'), np.sqrt(convolve2d((ds['snr'] - snr_avg)**2, conv_matrix, mode='same')))
+    ds['stddev'] = ds['stddev'].fillna(0)
+
+    Zn = ds.stddev.values
 
     cur_time = times[0]
     end_time = times[-1]
@@ -114,21 +116,18 @@ def make_imgs(ds, config, interval=5):
                                  mode='constant')
         if not os.path.exists('imgs'):
             os.mkdir('imgs')
-
-
-        if not os.path.exists('/app/imgs/'):
-            os.mkdir('/app/imgs')
         
-        if not os.path.exists('/app/imgs/train'):
-            os.mkdir('/app/imgs/train')
+        if not os.path.exists('imgs/train'):
+            os.mkdir('imgs/train')
 
-        fname = '/app/imgs/train/%d.png' % i
+        fname = 'imgs/train/%d.png' % i
         width = first_shape[0]
         height = first_shape[1]
+        
         # norm = norm.SerializeToStri
-        fig, ax = plt.subplots(1, 1, figsize=(1 * (height / width), 1))
+        fig, ax = plt.subplots(1, 1, figsize=(1, 1 * (height/width)))
         # ax.imshow(my_data)
-        ax.pcolormesh(my_data, cmap='act_HomeyerRainbow', vmin=20, vmax=150)
+        ax.pcolormesh(my_data, cmap='HomeyerRainbow', vmin=0, vmax=5)
         ax.set_axis_off()
         ax.margins(0, 0)
         try:
@@ -157,79 +156,90 @@ def worker_main(args):
     model = load_model(args.model)
     interval = int(args.interval)
     logging.debug('opening input %s' % args.input)
-
-   # CLIENT_ID = "2a0ee37f-475d-4b7f-8149-d6a2eab37aab"
-   # CLIENT_SECRET = "zQ+Sh52TiNXarGI/xfMeCBZ9ck5o2HSQ2t3K/vY94L4="
-
-   # confidential_client = globus_sdk.ConfidentialAppAuthClient(CLIENT_ID, CLIENT_SECRET)
-
-    # the useful values that you want at the end of this
-  #  scopes = "urn:globus:auth:scope:transfer.api.globus.org:all"
-  #  authorizer = globus_sdk.ClientCredentialsAuthorizer(confidential_client, scopes)
-  #  tc = globus_sdk.TransferClient(authorizer=authorizer)
-  #  local_endpoint = globus_sdk.LocalGlobusConnectPersonal()
-
-  #  source_endpoint_id = "d8da717e-ca5c-11ed-9622-4b6fcc022e5a"
-  #  target_endpoint_id = local_endpoint.endpoint_id
-  #  print(target_endpoint_id)
-  #  print("Endpoints Belonging to {}@clients.auth.globus.org:".format(CLIENT_ID))
-  #  for ep in tc.endpoint_search(filter_scope="my-endpoints"):
-  #      print("[{}] {}".format(ep["id"], ep["display_name"]))
-
-    # create a Transfer task consisting of one or more items
-  #  task_data = globus_sdk.TransferData(
-  #      source_endpoint=source_endpoint_id, destination_endpoint=target_endpoint_id
-  #  )
-  #  task_data.add_item(
-  #      "/202303/20230323/Background-230323-215053.txt",  # source
-  #      "/~/Background-230323-215053.txt",  # dest
-  #  )
-
-    # submit, getting back the task ID
-  #  task_doc = transfer_client.submit_transfer(task_data)
-  #  task_id = task_doc["task_id"]
-  #  print(f"submitted transfer, task_id={task_id}")
-     
+   
     old_file = ""
     run = True
     already_done = []
-    with Plugin() as plugin:
-        while run:
-            class_names = ['clear', 'cloudy']
+    if args.date is None:
+        cur_date = datetime.now().strftime("%Y%m%d")
+    else:
+        cur_date = args.date
+ #   with Plugin() as plugin:
+    while run:
+        class_names = ['clear', 'cloudy']
+        with paramiko.SSHClient() as ssh:
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(lidar_ip_addr, username=lidar_uname, password=lidar_pwd)
+            print("Connected to the Lidar!")
 
-            stare_list = glob(os.path.join(args.input, 'Stare*.hpl'))
-            
-            for fi in stare_list:
-                logging.debug("Processing %s" % fi)
-                dsd_ds = load_file(fi)
-                print(dsd_ds)
-                time_list = make_imgs(dsd_ds, args.config)
-                dsd_ds.close()
-                file_list = glob('/app/imgs/*.png')
-                print(file_list)
-                
-                img_gen = ImageDataGenerator(
-                    preprocessing_function=preprocess_input)
-
-                gen = img_gen.flow_from_directory(
-                         '/app/imgs/', target_size=(256, 128), shuffle=False)
-                out_predict = model.predict(gen).argmax(axis=1)
-                
-                for i, ti in enumerate(time_list):
-                    if ti not in already_done:
-                        tstamp = int(ti)
+            with ssh.open_sftp() as sftp:
+                remote_dir = '/C:/Lidar/Data/Proc/%s/%s/%s' % (
+                    cur_date[:4], cur_date[:6], cur_date)
+                file_list = sftp.listdir(remote_dir)
+                stare_list = []
+                for fi in file_list:
+                    if "Stare" in fi:
+                        print(fi)
+                        if not os.path.exists('stares'):
+                            os.makedirs('stares')
+                        base, name = os.path.split(fi)
+                        sftp.get(os.path.join(remote_dir, fi), 
+                                 os.path.join(os.path.join(
+                            os.getcwd(), 'stares'), name))
+                        stare_list.append(os.path.join(os.path.join(
+                            os.getcwd(), 'stares'), name))
                         
-                        if out_predict[i] == 0:
-                            string = "clear"
-                        else:
-                            string = "clouds/rain"
-                        logging.debug("%s: %s" % (str(ti), string))
-
-                        plugin.publish("weather.classifier.class",
-                                int(out_predict[i]),
-                                timestamp=tstamp)
-                        already_done.append(ti)
+        
+                for fi in stare_list:
+                    logging.debug("Processing %s" % fi)
+                    dsd_ds = load_file(fi)
+                    print(dsd_ds)
+                    time_list = make_imgs(dsd_ds, args.config)
+                    dsd_ds.close()
+                    file_list = glob('imgs/*.png')
+                    print(file_list)
                     
+                    img_gen = ImageDataGenerator(
+                        preprocessing_function=preprocess_input)
+
+                    gen = img_gen.flow_from_directory(
+                            'imgs/', target_size=(256, 128),
+                            shuffle=False)
+                    out_predict = model.predict(gen).argmax(axis=1)
+                    num_clouds = 0
+                    for i, ti in enumerate(time_list):
+                        if ti not in already_done:
+                            tstamp = int(ti)
+                            
+                            if out_predict[i] == 0:
+                                string = "clear"
+                            else:
+                                string = "clouds/rain"
+                                num_clouds += 1
+                            print("%s: %s" % (str(ti), string))
+                            
+                            #plugin.publish("weather.classifier.class",
+                            #        int(out_predict[i]),
+                            #        timestamp=tstamp)
+                            already_done.append(ti)
+                    if num_clouds < 6:
+                        time_str = str(time_list[0])[:9]
+                        print("Hour %s is mostly clear, deleting." % time_str)
+                        remote_dir = '/C:/Lidar/Data/Raw/%s/%s/%s' % (
+                    cur_date[:4], cur_date[:6], cur_date)
+                        file_list = sftp.listdir(remote_dir)
+                        for fi in file_list:
+                            time_str = str(time_list[0])[:9]
+                            time_str = time_str[:4] + "_" + time_str[6:8]
+                            if time_str in fi:
+                                try:
+                                    sftp.remove(os.path.join(remote_dir, fi))
+                                except:
+                                    continue
+                    else:
+                        time_str = str(time_list[0])
+                        print("Hour %s contains mostly clouds and rain, preserving data." % time_str)
+
             if args.loop == False:
                 run = False
 
@@ -259,6 +269,19 @@ if __name__ == '__main__':
         help='Time interval in seconds')
     parser.add_argument(
             '--loop', action='store_true')
+    parser.add_argument(
+            '--no-download',
+            help='Do not Download from lidar', dest='download',
+            action='store_false')
+    parser.add_argument(
+            '--delete-clear',
+            help='Delete clear hours from lidar', dest='del_clear',
+            action='store_true'
+    )
+    parser.add_argument(
+            '--delete-cloudy',
+            help='Delete cloud/rain hours from lidar', dest='del_cloud',
+    )
     parser.add_argument('--no-loop', action='store_false')
     parser.set_defaults(loop=True)
     parser.add_argument(
