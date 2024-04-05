@@ -2,10 +2,11 @@ FROM waggle/plugin-base:1.1.1-ml-torch1.9
 
 RUN apt-get update -y
 RUN apt-get install -y python3-tk
-RUN apt-get install -y python3-scipy
+#RUN apt-get install -y python3-scipy
 #RUN apt-get install -y libhdf5-serial-dev
 
 #RUN pip3 uninstall -y tensorflow
+RUN pip3 install scipy
 RUN pip3 install --pre --extra-index-url https://developer.download.nvidia.com/compute/redist/jp/v44 tensorflow==2.3.0+nv20.9
 RUN pip3 install netcdf4
 RUN pip3 install xarray
