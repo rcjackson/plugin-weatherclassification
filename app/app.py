@@ -9,31 +9,53 @@ import os
 import xarray as xr
 import tensorflow as tf
 import glob
-import globus_sdk
 import matplotlib.pyplot as plt
-import act
 import base64
+import matplotlib.cm as cm
 
 from waggle.plugin import Plugin
 from datetime import datetime, timedelta
 from scipy.signal import convolve2d
-from tensorflow.keras.models import load_model
+from tensorflow.keras.models import model_from_json
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.applications.resnet50 import preprocess_input
 
 from glob import glob
 from datetime import datetime, timedelta
 # 1. import standard logging module
-import logging
 import utils
-
-# 2. enable debug logging
-
+import paramiko
+import logging
 logging.basicConfig(level=logging.DEBUG)
+
 
 def convert_to_hours_minutes_seconds(decimal_hour, initial_time):
     delta = timedelta(hours=decimal_hour)
     return datetime(initial_time.year, initial_time.month, initial_time.day) + delta
+
+def yuv_rainbow_24(nc):
+    path1 = np.linspace(0.8 * np.pi, 1.8 * np.pi, nc)
+    path2 = np.linspace(-0.33 * np.pi, 0.33 * np.pi, nc)
+
+    y = np.concatenate(
+        [np.linspace(0.3, 0.85, nc * 2 // 5), np.linspace(0.9, 0.0, nc - nc * 2 // 5)]
+    )
+    u = 0.40 * np.sin(path1)
+    v = 0.55 * np.sin(path2) + 0.1
+
+    rgb_from_yuv = np.array([[1, 0, 1.13983], [1, -0.39465, -0.58060], [1, 2.03211, 0]])
+    cmap_dict = {'blue': [], 'green': [], 'red': []}
+    for i in range(len(y)):
+        yuv = np.array([y[i], u[i], v[i]])
+        rgb = rgb_from_yuv.dot(yuv)
+        red_tuple = (i / (len(y) - 1.0), rgb[0], rgb[0])
+        green_tuple = (i / (len(y) - 1.0), rgb[1], rgb[1])
+        blue_tuple = (i / (len(y) - 1.0), rgb[2], rgb[2])
+        cmap_dict['blue'].append(blue_tuple)
+        cmap_dict['red'].append(red_tuple)
+        cmap_dict['green'].append(green_tuple)
+
+    return cmap_dict
 
 def load_file(file):
     field_dict = utils.hpl2dict(file)
@@ -70,7 +92,7 @@ def make_imgs(ds, config, interval=5):
     dates = pd.date_range(ds.time.values[0], ds.time.values[-1], freq='%dmin' % interval)
     
     times = ds.time.values
-    print(times)
+    logging.debug(times)
     which_ranges = int(np.argwhere(ds.range.values < 8000.)[-1])
     ranges = np.tile(ds.range.values, (ds['snr'].shape[1], 1)).T
     
@@ -90,7 +112,7 @@ def make_imgs(ds, config, interval=5):
 
     while cur_time < end_time:
         next_time = cur_time + np.timedelta64(interval, 'm')
-        print((next_time, end_time))
+        logging.debug((next_time, end_time))
 
         if next_time > end_time:
             next_ind = len(times)
@@ -130,7 +152,7 @@ def make_imgs(ds, config, interval=5):
         # norm = norm.SerializeToStri
         fig, ax = plt.subplots(1, 1, figsize=(1 * (height / width), 1))
         # ax.imshow(my_data)
-        ax.pcolormesh(my_data, cmap='act_HomeyerRainbow', vmin=20, vmax=150)
+        ax.pcolormesh(my_data, cmap='HomeyerRainbow', vmin=20, vmax=150)
         ax.set_axis_off()
         ax.margins(0, 0)
         try:
@@ -151,30 +173,32 @@ def make_imgs(ds, config, interval=5):
 def progress(bytes_so_far: int, total_bytes: int):
     pct_complete = 100. * float(bytes_so_far) / float(total_bytes)
     if int(pct_complete * 10) % 100 == 0:
-        print("Total progress = %4.2f" % pct_complete)
+        logging.debug("Total progress = %4.2f" % pct_complete)
 
 def get_file(time, lidar_ip_addr, lidar_uname, lidar_pwd):
     with paramiko.SSHClient() as ssh:
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(lidar_ip_addr, username=lidar_uname, password=lidar_pwd)
-        print("Connected to the Lidar!")
+        logging.debug("Connected to the Lidar!")
         year = time.year
         day = time.day
         month = time.month
         hour = time.hour
 
         file_path = "/C:/Lidar/Data/Proc/%d/%d%02d/%d%02d%02d/" % (year, year, month, year, month, day)
-        
+        logging.debug(file_path)
         with ssh.open_sftp() as sftp:
             file_list = sftp.listdir(file_path)
             time_string = '%d%02d%02d_%02d' % (year, month, day, hour) 
             file_name = None
+            
             for f in file_list:
                 if time_string in f:
                     file_name = f
             if file_name is None:
-                print("%s not found!" % str(time))
+                logging.debug("%s not found!" % str(time))
             base, name = os.path.split(file_name)
+            logging.debug(print(file_name))
             sftp.get(file_name, os.path.join('/data', name))
 
 lidar_ip_addr = os.environ["LIDAR_IP"]
@@ -183,7 +207,12 @@ lidar_pwd = base64.b64decode(os.environ["LIDAR_PASSWORD"]).decode("utf-8")
 
 def worker_main(args):
     logging.debug("Loading model %s" % args.model)
-    model = load_model(args.model)
+    with open(args.model + ".json", 'r') as json_file:
+        json_text = json_file.read()
+    model = model_from_json(json_text)
+    logging.debug("Model loaded")
+    model.load_weights(args.model + "_weights.h5")
+    logging.debug(args.model + "_weights.h5 loaded")
     interval = int(args.interval)
     logging.debug('opening input %s' % args.input)
     if args.date is None and args.time is None:
@@ -210,11 +239,11 @@ def worker_main(args):
             for fi in stare_list:
                 logging.debug("Processing %s" % fi)
                 dsd_ds = load_file(fi)
-                print(dsd_ds)
+                logging.debug(dsd_ds)
                 time_list = make_imgs(dsd_ds, args.config)
                 dsd_ds.close()
                 file_list = glob('/app/imgs/*.png')
-                print(file_list)
+                logging.debug(file_list)
                 
                 img_gen = ImageDataGenerator(
                     preprocessing_function=preprocess_input)
@@ -246,11 +275,13 @@ def worker_main(args):
 
 def main(args):
     if args.verbose:
-        print('running in a verbose mode')
+        logging.debug('running in a verbose mode')
     worker_main(args)
 
 
 if __name__ == '__main__':
+    # Register colrmap for images
+    cm.register_cmap('HomeyerRainbow', yuv_rainbow_24(15))
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--verbose', dest='verbose',
@@ -262,7 +293,7 @@ if __name__ == '__main__':
     
     parser.add_argument(
         '--model', dest='model',
-        action='store', default='resnet50.hdf5',
+        action='store', default='resnet50',
         help='Path to model')
     parser.add_argument(
         '--interval', dest='interval',
@@ -280,13 +311,10 @@ if __name__ == '__main__':
                         help='Date of record to pull in (YYYYMMDD)')
     parser.add_argument('--time', dest='time', action='store',
                         default=None, help='Time of record to pull (hour)')
-
-    gpus = tf.config.experimental.list_physical_devices('GPU')
-    if gpus:
-        try:
-            tf.config.experimental.set_virtual_device_configuration(
-                    gpus[0], [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=1024)])
-        except RuntimeError as e:
-            print(e)
-    main(parser.parse_args())
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    try:
+        main(parser.parse_args())
+    except Exception as e:
+        logging.debug(e)
                                             
