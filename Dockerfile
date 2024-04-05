@@ -2,9 +2,9 @@ FROM waggle/plugin-base:1.1.1-ml-torch1.9
 
 RUN apt-get update -y
 RUN apt-get install -y python3-tk
+RUN apt-get install -y python3-scipy
 #RUN apt-get install -y libhdf5-serial-dev
 
-RUN pip3 install scipy==1.4.1
 #RUN pip3 uninstall -y tensorflow
 RUN pip3 install --pre --extra-index-url https://developer.download.nvidia.com/compute/redist/jp/v44 tensorflow==2.3.0+nv20.9
 RUN pip3 install netcdf4
@@ -16,7 +16,8 @@ RUN pip3 install act-atmos==1.1.0
 #RUN pip3 install --upgrade xarray
 
 ENV MPLBACKEND="agg"
-
+ENV LIDAR_USERNAME=$LIDAR_USERNAME
+ENV LIDAR_PASSWORD=$LIDAR_PASSWORD
 COPY app/ /app/
 COPY app/*.json /app/
 COPY app/*.hdf5 /app/

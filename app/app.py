@@ -12,6 +12,7 @@ import glob
 import globus_sdk
 import matplotlib.pyplot as plt
 import act
+import base64
 
 from waggle.plugin import Plugin
 from datetime import datetime, timedelta
@@ -21,6 +22,7 @@ from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.applications.resnet50 import preprocess_input
 
 from glob import glob
+from datetime import datetime, timedelta
 # 1. import standard logging module
 import logging
 import utils
@@ -151,46 +153,52 @@ def progress(bytes_so_far: int, total_bytes: int):
     if int(pct_complete * 10) % 100 == 0:
         print("Total progress = %4.2f" % pct_complete)
 
+def get_file(time, lidar_ip_addr, lidar_uname, lidar_pwd):
+    with paramiko.SSHClient() as ssh:
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(lidar_ip_addr, username=lidar_uname, password=lidar_pwd)
+        print("Connected to the Lidar!")
+        year = time.year
+        day = time.day
+        month = time.month
+        hour = time.hour
+
+        file_path = "/C:/Lidar/Data/Proc/%d/%d%02d/%d%02d%02d/" % (year, year, month, year, month, day)
+        
+        with ssh.open_sftp() as sftp:
+            file_list = sftp.listdir(file_path)
+            time_string = '%d%02d%02d_%02d' % (year, month, day, hour) 
+            file_name = None
+            for f in file_list:
+                if time_string in f:
+                    file_name = f
+            if file_name is None:
+                print("%s not found!" % str(time))
+            base, name = os.path.split(file_name)
+            sftp.get(file_name, os.path.join('/data', name))
+
+lidar_ip_addr = os.environ["LIDAR_IP"]
+lidar_uname = os.environ["LIDAR_USERNAME"]
+lidar_pwd = base64.b64decode(os.environ["LIDAR_PASSWORD"]).decode("utf-8")
 
 def worker_main(args):
     logging.debug("Loading model %s" % args.model)
     model = load_model(args.model)
     interval = int(args.interval)
     logging.debug('opening input %s' % args.input)
+    if args.date is None and args.time is None:
+        imgtime = datetime.now() - timedelta(hours=1)
+    elif args.date is None:
+        cur_day = datetime.now()
+        imgtime = datetime(cur_day.year, cur_day.month, cur_day.day, str(args.time))
+    else:
+        year = int(args.date[0:4])
+        month = int(args.date[4:6])
+        day = int(args.date[6:8])
+        hour = int(args.time)
+        imgtime = datetime(year, month, day, hour)
+    get_file(imgtime, lidar_ip_addr, lidar_uname, lidar_pwd)
 
-   # CLIENT_ID = "2a0ee37f-475d-4b7f-8149-d6a2eab37aab"
-   # CLIENT_SECRET = "zQ+Sh52TiNXarGI/xfMeCBZ9ck5o2HSQ2t3K/vY94L4="
-
-   # confidential_client = globus_sdk.ConfidentialAppAuthClient(CLIENT_ID, CLIENT_SECRET)
-
-    # the useful values that you want at the end of this
-  #  scopes = "urn:globus:auth:scope:transfer.api.globus.org:all"
-  #  authorizer = globus_sdk.ClientCredentialsAuthorizer(confidential_client, scopes)
-  #  tc = globus_sdk.TransferClient(authorizer=authorizer)
-  #  local_endpoint = globus_sdk.LocalGlobusConnectPersonal()
-
-  #  source_endpoint_id = "d8da717e-ca5c-11ed-9622-4b6fcc022e5a"
-  #  target_endpoint_id = local_endpoint.endpoint_id
-  #  print(target_endpoint_id)
-  #  print("Endpoints Belonging to {}@clients.auth.globus.org:".format(CLIENT_ID))
-  #  for ep in tc.endpoint_search(filter_scope="my-endpoints"):
-  #      print("[{}] {}".format(ep["id"], ep["display_name"]))
-
-    # create a Transfer task consisting of one or more items
-  #  task_data = globus_sdk.TransferData(
-  #      source_endpoint=source_endpoint_id, destination_endpoint=target_endpoint_id
-  #  )
-  #  task_data.add_item(
-  #      "/202303/20230323/Background-230323-215053.txt",  # source
-  #      "/~/Background-230323-215053.txt",  # dest
-  #  )
-
-    # submit, getting back the task ID
-  #  task_doc = transfer_client.submit_transfer(task_data)
-  #  task_id = task_doc["task_id"]
-  #  print(f"submitted transfer, task_id={task_id}")
-     
-    old_file = ""
     run = True
     already_done = []
     with Plugin() as plugin:
@@ -229,7 +237,9 @@ def worker_main(args):
                                 int(out_predict[i]),
                                 timestamp=tstamp)
                         already_done.append(ti)
-                    
+
+                for f in file_list:
+                    plugin.upload_file(f)                   
             if args.loop == False:
                 run = False
 
@@ -249,6 +259,7 @@ if __name__ == '__main__':
         '--input', dest='input',
         action='store', default='/data',
         help='Path to input device or ARM datastream name')
+    
     parser.add_argument(
         '--model', dest='model',
         action='store', default='resnet50.hdf5',
@@ -266,9 +277,9 @@ if __name__ == '__main__':
             help='Set to User5 for PPI or Stare for VPTs')
     parser.add_argument('--date', dest='date', action='store',
                         default=None,
-                        help='Date of record to pull in (YYYY-MM-DD)')
+                        help='Date of record to pull in (YYYYMMDD)')
     parser.add_argument('--time', dest='time', action='store',
-                        default=None, help='Time of record to pull')
+                        default=None, help='Time of record to pull (hour)')
 
     gpus = tf.config.experimental.list_physical_devices('GPU')
     if gpus:
