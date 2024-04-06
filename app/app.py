@@ -5,23 +5,24 @@ import xarray as xr
 import pandas as pd
 import time
 import argparse
+import tensorflow as tf
 import os
 import xarray as xr
-import tensorflow as tf
 import glob
+import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.colors as colors
 import base64
 import matplotlib.cm as cm
+import cv2
 
 from waggle.plugin import Plugin
 from datetime import datetime, timedelta
 from scipy.signal import convolve2d
-from tensorflow.keras.models import model_from_json
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.applications.resnet50 import preprocess_input
-
 from glob import glob
 from datetime import datetime, timedelta
+from tensorflow.keras.applications.resnet import preprocess_input
+
 # 1. import standard logging module
 import utils
 import paramiko
@@ -32,6 +33,16 @@ logging.basicConfig(level=logging.DEBUG)
 def convert_to_hours_minutes_seconds(decimal_hour, initial_time):
     delta = timedelta(hours=decimal_hour)
     return datetime(initial_time.year, initial_time.month, initial_time.day) + delta
+
+def _generate_cmap(name, spec, lutsize):
+    """Generates the requested cmap from it's name *name*. The lut size is
+    *lutsize*."""
+
+    # Generate the colormap object.
+    if isinstance(spec, dict) and 'red' in spec.keys():
+        return colors.LinearSegmentedColormap(name, spec, lutsize)
+    else:
+        return colors.LinearSegmentedColormap.from_list(name, spec, lutsize)
 
 def yuv_rainbow_24(nc):
     path1 = np.linspace(0.8 * np.pi, 1.8 * np.pi, nc)
@@ -56,6 +67,7 @@ def yuv_rainbow_24(nc):
         cmap_dict['green'].append(green_tuple)
 
     return cmap_dict
+
 
 def load_file(file):
     field_dict = utils.hpl2dict(file)
@@ -96,7 +108,7 @@ def make_imgs(ds, config, interval=5):
     which_ranges = int(np.argwhere(ds.range.values < 8000.)[-1])
     ranges = np.tile(ds.range.values, (ds['snr'].shape[1], 1)).T
     
-    ds['snr'] = ds['snr'] + 2 * np.log10(ranges + 1)
+    ds['snr'] = ds['intensity']
     conv_matrix = return_convolution_matrix(5, 5)
     snr_avg = convolve2d(ds['snr'].values, conv_matrix, mode='same')
     ds['stddev'] = (('range', 'time'), 
@@ -143,16 +155,14 @@ def make_imgs(ds, config, interval=5):
         if not os.path.exists('/app/imgs/'):
             os.mkdir('/app/imgs')
         
-        if not os.path.exists('/app/imgs/train'):
-            os.mkdir('/app/imgs/train')
 
-        fname = '/app/imgs/train/%d.png' % i
+        fname = '/app/imgs/%d.png' % i
         width = first_shape[0]
         height = first_shape[1]
         # norm = norm.SerializeToStri
-        fig, ax = plt.subplots(1, 1, figsize=(1 * (height / width), 1))
+        fig, ax = plt.subplots(1, 1, figsize=(1, 1 * (height/width)))
         # ax.imshow(my_data)
-        ax.pcolormesh(my_data, cmap='HomeyerRainbow', vmin=20, vmax=150)
+        ax.pcolormesh(my_data, cmap='HomeyerRainbow', vmin=0, vmax=5)
         ax.set_axis_off()
         ax.margins(0, 0)
         try:
@@ -178,6 +188,7 @@ def progress(bytes_so_far: int, total_bytes: int):
 def get_file(time, lidar_ip_addr, lidar_uname, lidar_pwd):
     with paramiko.SSHClient() as ssh:
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        logging.debug("Connecting to %s" % lidar_ip_addr)
         ssh.connect(lidar_ip_addr, username=lidar_uname, password=lidar_pwd)
         logging.debug("Connected to the Lidar!")
         year = time.year
@@ -199,22 +210,27 @@ def get_file(time, lidar_ip_addr, lidar_uname, lidar_pwd):
                 logging.debug("%s not found!" % str(time))
             base, name = os.path.split(file_name)
             logging.debug(print(file_name))
-            sftp.get(file_name, os.path.join('/data', name))
+            sftp.get(os.path.join(file_path, file_name), name)
 
-lidar_ip_addr = os.environ["LIDAR_IP"]
-lidar_uname = os.environ["LIDAR_USERNAME"]
-lidar_pwd = base64.b64decode(os.environ["LIDAR_PASSWORD"]).decode("utf-8")
 
-def worker_main(args):
+class TFLiteModel:
+    def __init__(self, model_path: str):
+        self.interpreter = tf.lite.Interpreter(model_path)
+        self.interpreter.allocate_tensors()
+
+        self.input_details = self.interpreter.get_input_details()
+        self.output_details = self.interpreter.get_output_details()
+
+    def predict(self, *data_args):
+        assert len(data_args) == len(self.input_details)
+        for data, details in zip(data_args, self.input_details):
+            self.interpreter.set_tensor(details["index"], data)
+        self.interpreter.invoke()
+        return self.interpreter.get_tensor(self.output_details[0]["index"])
+
+def worker_main(args, config_dict):
     logging.debug("Loading model %s" % args.model)
-    with open(args.model + ".json", 'r') as json_file:
-        json_text = json_file.read()
-    model = model_from_json(json_text)
-    logging.debug("Model loaded")
-    model.load_weights(args.model + "_weights.h5")
-    logging.debug(args.model + "_weights.h5 loaded")
     interval = int(args.interval)
-    logging.debug('opening input %s' % args.input)
     if args.date is None and args.time is None:
         imgtime = datetime.now() - timedelta(hours=1)
     elif args.date is None:
@@ -226,7 +242,7 @@ def worker_main(args):
         day = int(args.date[6:8])
         hour = int(args.time)
         imgtime = datetime(year, month, day, hour)
-    get_file(imgtime, lidar_ip_addr, lidar_uname, lidar_pwd)
+    get_file(imgtime, args.IP, args.uname, args.password)
 
     run = True
     already_done = []
@@ -234,7 +250,7 @@ def worker_main(args):
         while run:
             class_names = ['clear', 'cloudy']
 
-            stare_list = glob(os.path.join(args.input, 'Stare*.hpl'))
+            stare_list = glob('Stare*.hpl')
             
             for fi in stare_list:
                 logging.debug("Processing %s" % fi)
@@ -242,16 +258,18 @@ def worker_main(args):
                 logging.debug(dsd_ds)
                 time_list = make_imgs(dsd_ds, args.config)
                 dsd_ds.close()
+                del dsd_ds
+                model = TFLiteModel(args.model)
                 file_list = glob('/app/imgs/*.png')
                 logging.debug(file_list)
-                
-                img_gen = ImageDataGenerator(
-                    preprocessing_function=preprocess_input)
+                out_predict = []
+                for f in file_list:
+                    image = cv2.imread(f)
+                    image = cv2.resize(image, (128, 96))
+                    image = image.astype(np.float32)[np.newaxis]
+                    image = preprocess_input(image)
+                    out_predict.append(model.predict(image)[0].argmax())
 
-                gen = img_gen.flow_from_directory(
-                         '/app/imgs/', target_size=(256, 128), shuffle=False)
-                out_predict = model.predict(gen).argmax(axis=1)
-                
                 for i, ti in enumerate(time_list):
                     if ti not in already_done:
                         tstamp = int(ti)
@@ -273,27 +291,44 @@ def worker_main(args):
                 run = False
 
 
-def main(args):
+def main(args, config):
     if args.verbose:
         logging.debug('running in a verbose mode')
-    worker_main(args)
+    worker_main(args, config)
 
 
 if __name__ == '__main__':
     # Register colrmap for images
-    cm.register_cmap('HomeyerRainbow', yuv_rainbow_24(15))
+    default_config = {
+        'num_epochs': 2000,
+        'learning_rate': 0.001,
+        'num_nodes': 512,
+        'num_layers': 3,
+        'batch_size': 32}
+
+    LUTSIZE = mpl.rcParams['image.lut']
+    cmap = _generate_cmap('HomeyerRainbow', yuv_rainbow_24(15), LUTSIZE)
+    cm.register_cmap(cmap=cmap, name='HomeyerRainbow')
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--verbose', dest='verbose',
         action='store_true', help='Verbose')
     parser.add_argument(
-        '--input', dest='input',
-        action='store', default='/data',
-        help='Path to input device or ARM datastream name')
-    
+            '--password', dest='password',
+            default='', action='store', 
+            help='Lidar password')
+    parser.add_argument(
+            '--IP', default='10.31.81.87',
+            dest='IP', action='store',
+            help='Lidar IP address')
+
+    parser.add_argument(
+            '--uname', default='end user',
+            dest='uname', action='store',
+            help='Lidar username')
     parser.add_argument(
         '--model', dest='model',
-        action='store', default='resnet50',
+        action='store', default='/app/model.tflite',
         help='Path to model')
     parser.add_argument(
         '--interval', dest='interval',
@@ -302,7 +337,7 @@ if __name__ == '__main__':
     parser.add_argument(
             '--loop', action='store_true')
     parser.add_argument('--no-loop', action='store_false')
-    parser.set_defaults(loop=True)
+    parser.set_defaults(loop=False)
     parser.add_argument(
             '--config', dest='config', action='store', default='dlacf',
             help='Set to User5 for PPI or Stare for VPTs')
@@ -311,10 +346,12 @@ if __name__ == '__main__':
                         help='Date of record to pull in (YYYYMMDD)')
     parser.add_argument('--time', dest='time', action='store',
                         default=None, help='Time of record to pull (hour)')
-    config = tf.ConfigProto()
-    config.gpu_options.allow_growth = True
-    try:
-        main(parser.parse_args())
-    except Exception as e:
-        logging.debug(e)
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            tf.config.experimental.set_virtual_device_configuration(
+                    gpus[0], [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=512)])
+        except RuntimeError as e:
+            print(e)
+    main(parser.parse_args(), default_config)
                                             
