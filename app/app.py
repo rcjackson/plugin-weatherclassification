@@ -292,6 +292,7 @@ def worker_main(args, config_dict):
 
 
 def main(args, config):
+    args.password = base64.b64decode(args.password).decode("utf-8")
     if args.verbose:
         logging.debug('running in a verbose mode')
     worker_main(args, config)
