@@ -204,7 +204,7 @@ def get_file(time, lidar_ip_addr, lidar_uname, lidar_pwd):
             file_name = None
             
             for f in file_list:
-                if time_string in f:
+                if time_string in f and 'Stare' in f:
                     file_name = f
             if file_name is None:
                 logging.debug("%s not found!" % str(time))
