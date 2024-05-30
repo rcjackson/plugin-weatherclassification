@@ -124,21 +124,22 @@ def make_imgs(ds, config, interval=5):
 
     while cur_time < end_time:
         next_time = cur_time + np.timedelta64(interval, 'm')
-        logging.debug((next_time, end_time))
+        logging.debug((cur_time, next_time, end_time))
 
         if next_time > end_time:
             next_ind = len(times)
         else:
             next_ind = np.argmin(np.abs(next_time - times))
-        if (start_ind >= next_ind):
-            break
+        logging.debug((start_ind, next_ind))
+            
 
         my_data = Zn[start_ind:next_ind, 0:which_ranges].T
 
         my_times = times[start_ind:next_ind]
-        if len(my_times) == 0:
-            break
         start_ind += next_ind - start_ind + 1
+        if len(my_times) < 2:
+            cur_time = next_time
+            continue
 
         if first_shape is None:
             first_shape = my_data.shape
