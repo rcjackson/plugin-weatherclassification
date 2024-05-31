@@ -167,7 +167,7 @@ def make_imgs(ds, config, interval=5):
         ax.set_axis_off()
         ax.margins(0, 0)
         try:
-            fig.savefig(fname, dpi=300, bbox_inches='tight', pad_inches=-0.2)
+            fig.savefig(fname, dpi=150, bbox_inches='tight', pad_inches=-0.25)
         except RuntimeError:
             plt.close(fig)
             continue
