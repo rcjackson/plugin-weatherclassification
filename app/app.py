@@ -110,7 +110,7 @@ def make_imgs(ds, config, interval=5):
     
     ds['snr'] = ds['intensity']
     conv_matrix = return_convolution_matrix(5, 5)
-    snr_avg = convolve2d(ds['snr'].values, conv_matrix, mode='same')
+    snr_avg = convolve2d(ds['snr'].values, conv_matrix, mode='same', )
     ds['stddev'] = (('range', 'time'), 
             np.sqrt(convolve2d((ds['snr'] - snr_avg) ** 2, conv_matrix, mode='same')))
     Zn = ds.stddev.values.T
@@ -158,16 +158,16 @@ def make_imgs(ds, config, interval=5):
         
 
         fname = '/app/imgs/%d.png' % i
-        width = first_shape[0]
-        height = first_shape[1]
+        width = my_data.shape[0]
+        height = my_data.shape[1]
         # norm = norm.SerializeToStri
-        fig, ax = plt.subplots(1, 1, figsize=(1, 1 * (height/width)))
+        fig, ax = plt.subplots(1, 1)
         # ax.imshow(my_data)
         ax.pcolormesh(my_data, cmap='HomeyerRainbow', vmin=0, vmax=5)
         ax.set_axis_off()
         ax.margins(0, 0)
         try:
-            fig.savefig(fname, dpi=300, bbox_inches='tight', pad_inches=0)
+            fig.savefig(fname, dpi=300, bbox_inches='tight', pad_inches=-0.2)
         except RuntimeError:
             plt.close(fig)
             continue
