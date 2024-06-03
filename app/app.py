@@ -161,20 +161,16 @@ def make_imgs(ds, config, interval=5):
         width = my_data.shape[0]
         height = my_data.shape[1]
         # norm = norm.SerializeToStri
-        fig, ax = plt.subplots(1, 1)
         # ax.imshow(my_data)
-        ax.pcolormesh(my_data, cmap='HomeyerRainbow', vmin=0, vmax=5)
-        ax.set_axis_off()
-        ax.margins(0, 0)
+        cmap = plt.get_cmap('HomeyerRainbow')
+        norm = plt.Normalize(vmin=0, vmax=5)
+        image = cmap(norm(my_data))
         try:
-            fig.savefig(fname, dpi=150, bbox_inches='tight', pad_inches=-0.25)
-        except RuntimeError:
-            plt.close(fig)
+            plt.imsave(fname, image)
+        except (RuntimeError, ValueError):
             continue
 
-        plt.close(fig)
         i = i + 1
-        del fig, ax
         time_list.append(cur_time)
         cur_time = next_time
 
