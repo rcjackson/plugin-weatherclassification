@@ -113,7 +113,7 @@ def make_imgs(ds, config, interval=5):
     snr_avg = convolve2d(ds['snr'].values, conv_matrix, mode='same', )
     ds['stddev'] = (('range', 'time'), 
             np.sqrt(convolve2d((ds['snr'] - snr_avg) ** 2, conv_matrix, mode='same')))
-    Zn = ds.stddev.values.T
+    Zn = ds.snr.values.T
 
     cur_time = times[0]
     end_time = times[-1]
@@ -162,9 +162,9 @@ def make_imgs(ds, config, interval=5):
         height = my_data.shape[1]
         # norm = norm.SerializeToStri
         # ax.imshow(my_data)
-        cmap = plt.get_cmap('HomeyerRainbow')
-        norm = plt.Normalize(vmin=0, vmax=5)
-        image = cmap(norm(my_data))
+        cmap = plt.get_cmap('Spectral_r')
+        norm = plt.Normalize(vmin=0, vmax=2)
+        image = cmap(norm(my_data[::-1, :]))
         try:
             plt.imsave(fname, image)
         except (RuntimeError, ValueError):
@@ -289,7 +289,7 @@ def worker_main(args, config_dict):
 
 
 def main(args, config):
-    args.password = base64.b64decode(args.password).decode("utf-8")
+    args.password = str(args.password)
     if args.verbose:
         logging.debug('running in a verbose mode')
     worker_main(args, config)
